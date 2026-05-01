@@ -1,0 +1,153 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # API GATEWAY
+  # ==========================================
+  api-gateway:
+    image: traefik:v2.10
+    container_name: pechetech-api-gateway
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080" # Dashboard Traefik
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - pechetech-network
+
+  # ==========================================
+  # INFRASTRUCTURE CORE (Bases de données & Brokers)
+  # ==========================================
+  postgres-db:
+    image: postgis/postgis:15-3.3
+    container_name: pechetech-postgres
+    environment:
+      POSTGRES_USER: pechetech_admin
+      POSTGRES_PASSWORD: pechetech_password
+      POSTGRES_DB: pechetech_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - pechetech-network
+
+  redis-cache:
+    image: redis:7-alpine
+    container_name: pechetech-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - pechetech-network
+
+  rabbitmq-broker:
+    image: rabbitmq:3-management-alpine
+    container_name: pechetech-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    networks:
+      - pechetech-network
+
+  # ==========================================
+  # MICROSERVICES (Backend)
+  # ==========================================
+  benefit-service:
+    build:
+      context: ../../pechetech-benefit-service
+      dockerfile: docker/Dockerfile
+    container_name: pechetech-benefit-service
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres-db
+      - DB_PORT=5432
+      - DB_USER=pechetech_admin
+      - DB_PASS=pechetech_password
+    depends_on:
+      - postgres-db
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.benefit.rule=PathPrefix(`/api/v1/expenses`)"
+      - "traefik.http.services.benefit.loadbalancer.server.port=3000"
+    networks:
+      - pechetech-network
+
+  fuel-service:
+    build:
+      context: ../../pechetech-fuel-service
+      dockerfile: docker/Dockerfile
+    container_name: pechetech-fuel-service
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres-db
+    depends_on:
+      - postgres-db
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fuel.rule=PathPrefix(`/api/v1/fuel`)"
+      - "traefik.http.services.fuel.loadbalancer.server.port=3001"
+    networks:
+      - pechetech-network
+
+  finance-ocr-service:
+    build:
+      context: ../../pechetech-finance-ocr-service
+      dockerfile: docker/Dockerfile
+    container_name: pechetech-finance-ocr-service
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis-cache:6379
+    depends_on:
+      - redis-cache
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ocr.rule=PathPrefix(`/api/v1/ocr`)"
+      - "traefik.http.services.ocr.loadbalancer.server.port=8000"
+    networks:
+      - pechetech-network
+
+  predictive-weather-service:
+    build:
+      context: ../../pechetech-predictive-weather-service
+      dockerfile: docker/Dockerfile
+    container_name: pechetech-predictive-weather-service
+    environment:
+      - ENVIRONMENT=development
+      - DB_HOST=postgres-db
+    depends_on:
+      - postgres-db
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.predictive.rule=PathPrefix(`/api/v1/predictions`)"
+      - "traefik.http.services.predictive.loadbalancer.server.port=8000"
+    networks:
+      - pechetech-network
+
+  blockchain-service:
+    build:
+      context: ../../pechetech-blockchain-service
+      dockerfile: docker/Dockerfile
+    container_name: pechetech-blockchain-service
+    environment:
+      - NODE_ENV=development
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.blockchain.rule=PathPrefix(`/api/v1/blockchain`)"
+      - "traefik.http.services.blockchain.loadbalancer.server.port=3002"
+    networks:
+      - pechetech-network
+
+volumes:
+  pg_data:
+
+networks:
+  pechetech-network:
+    driver: bridge
